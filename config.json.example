@@ -1,0 +1,65 @@
+{
+    "name": "Radio Ventana Mágica",
+    "log": "DISCORD WEBHOOK URL (OPTIONAL)",
+    "key": "DISCORD BOT KEY",
+    "domains": {
+        "GUILD ID": {
+            "sources": {
+                "STRING: TEXT CHANNEL ID": {
+                    "ttl": 300,
+                    "prefSize": 15,
+                    "isolated": false,
+                    "private": false,
+                    "sampleSize": 10
+                },
+                "STRING: DIFFERENT TEXT CHANNEL ID": {
+                    "ttl": -1,
+                    "prefSize": 15,
+                    "isolated": true,
+                    "private": true,
+                    "sampleSize": 1
+                }
+            },
+            "broadcast": {
+                "channel": "INTEGER: VOICE CHANNEL ID"
+            },
+            "history": [0, 0, 0, 0, 0, 0, 0],
+            "playing": false,
+            "votes": {
+                "minimum": 2,
+                "ratio": 0.3,
+                "up": {
+                    "type": "string",
+                    "id": "arrow_up"
+                },
+                "down": {
+                    "type": "string",
+                    "id": "arrow_down"
+                }
+            }
+        },
+        "DIFFERENT GUILD ID": {
+                "sources": {
+                    "STRING: TEXT CHANNEL ID": {
+                        "ttl": 300,
+                        "prefSize": 15,
+                        "isolated": false,
+                        "private": false,
+                        "sampleSize": 10
+                    },
+                    "STRING: DIFFERENT TEXT CHANNEL ID": {
+                        "ttl": -1,
+                        "prefSize": 15,
+                        "isolated": true,
+                        "private": true,
+                        "sampleSize": 1
+                    }
+                },
+                "broadcast": {
+                    "channel": "INTEGER: VOICE CHANNEL ID"
+                },
+                "history": [0, 0, 0, 0, 0, 0, 0],
+                "playing": false
+            }
+    }
+}

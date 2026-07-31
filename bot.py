@@ -1,4 +1,4 @@
-import asyncio, random, discord, aiosqlite, aiohttp, json
+import asyncio, random, discord, aiosqlite, aiohttp, json, traceback
 from time import time
 from pydub import AudioSegment
 from io import BytesIO
@@ -37,11 +37,38 @@ for domain in domains:
 domains = tmpDomains
 
 def audioUID(audio):
-    return [
-        audio["channel"],
-        audio["message"],
-        audio["index"]
-    ]
+    return hash((audio["messageID"], audio["url"]))
+
+def getHash(message: discord.Message | tuple):
+    """Takes message object or a tuple (guild, channel, message)"""
+    if type(message) == discord.Message:
+        return hash((message.guild.id, message.channel.id, message.id))
+    elif type(message) == tuple:
+        return hash(message)
+    raise ValueError()
+
+async def transaction(statement):
+    async with aiosqlite.connect("audio.db") as db:
+        cur = await db.execute(statement)
+        results = await cur.fetchall()
+        await db.commit()
+    return results
+
+async def getMessages():
+    messages = await transaction(f"SELECT channel, message FROM messages ORDER BY channel;")
+    channelObjs = {}
+    messageObjs = []
+    for m in messages:
+        if not m[0] in channelObjs:
+            channelObjs[m[0]] = client.get_channel(m[0])
+        try:
+            messageObjs.append(await channelObjs[m[0]].fetch_message(m[1]))
+        except discord.errors.NotFound:
+            uid = getHash(m)
+            await transaction(f"DELETE FROM messages WHERE messageID={uid};")
+            await transaction(f"DELETE FROM attachments WHERE messageID={uid};")
+
+    return messageObjs
 
 class AudioHandler:
     def __init__(self, domain: str):
@@ -60,45 +87,65 @@ class AudioHandler:
             message = await self.getMessage(audio["channel"], audio["message"])
             assert message
             return True
-        except Exception as e:
-            await self.delete(audio)
+        except Exception:
+            await log(traceback.format_exc())
+            await self.deleteAudio(audio)
             return False
-    
-    #TODO: Update database schema
-    async def add(self, audio):
-        async with aiosqlite.connect("tracks.db") as db:
-            await db.execute(f"INSERT INTO tracks (domain, channel, message, length, playing, fileIndex, dob, playcount) VALUES ({self.domain}, {audio['channel']}, {audio['message']}, {audio['length']}, 1, {audio['index']}, {audio['dob']}, {audio['playcount']});")
-            await db.commit()
-    
-    async def delete(self, audio):
-        async with aiosqlite.connect("tracks.db") as db:
-            await db.execute(f"UPDATE tracks SET playing=0 WHERE domain={self.domain} AND channel={audio['channel']} AND message={audio['message']} AND fileIndex={audio['index']};")
-            await db.commit()
-    
+
+    async def addMessage(self, message: discord.Message):
+        id = getHash(message)
+        await transaction(f"INSERT INTO messages VALUES ({self.domain}, {message.channel.id}, {message.id}, {id}, {message.created_at.timestamp()}, {message.author.id});")
+
+    async def addAudio(self, audio: dict):
+        await transaction(f"INSERT INTO attachments VALUES ({audio['messageID']}, 0, '{audio['url']}', {audio['length']}, '{audio['name']}');")
+
+    async def deleteAudio(self, audio: dict):
+        await transaction(f"DELETE FROM attachments WHERE messageID={audio['messageID']} and url='{audio['url']}';")
+
     async def increment(self, audio):
-        async with aiosqlite.connect("tracks.db") as db:
-            await db.execute(f"UPDATE tracks SET playcount={audio['playcount'] + 1} where domain={self.domain} AND channel={audio['channel']} AND message={audio['message']} AND fileIndex={audio['index']};")
-            await db.commit()
+        await transaction(f"UPDATE attachments SET playcount={audio['playcount'] + 1} WHERE messageID='{audio['messageID']}' and url='{audio['url']}';")
+
+    async def getFromMessage(self, messageID: int):
+        results = await transaction(f"SELECT messageID, playcount, url, length FROM attachments WHERE messageID={messageID};")
+        return [{
+            "messageID": r[0],
+            "playcount": r[1],
+            "url": r[2],
+            "length": r[3]
+        } for r in results]
+    
+    async def deleteMessage(self, message: discord.Message | tuple[int, int, int]):
+        if type(message) == discord.Message:
+            message = (
+                message.guild.id,
+                message.channel.id,
+                message.id
+            )
+        id = hash(message)
+        await transaction(f"DELETE FROM messages WHERE messageID={message};")
+        await transaction(f"DELETE FROM attachments WHERE messageID={message};")
 
     def list(self):
         return "\n".join([str(a) for a in self.audios])
 
     async def getAudio(self, exclude=None):
-        "list of recent audio messages"
-        async with aiosqlite.connect("tracks.db") as db:
-            cur = await db.execute(f"SELECT channel, message, length, fileIndex, dob, playcount FROM tracks WHERE domain={self.domain} AND playing=1;")
-            results = await cur.fetchall()
+        "Get one of the recent audio messages"
+        results = await transaction("SELECT messages.channel, messages.messageID, attachments.length, messages.dob, attachments.playcount, attachments.url, messages.author, attachments.name FROM attachments JOIN messages ON attachments.messageID = messages.messageID;")
+        if len(results) == 0:
+            return None
         channels = {}
         history = domains[self.domain]["history"]
         bin = {}
         for result in results:
             audio = {
                 "channel": result[0],
-                "message": result[1],
+                "messageID": result[1],
                 "length": result[2],
-                "index": result[3],
-                "dob": result[4],
-                "playcount": result[5],
+                "dob": result[3],
+                "playcount": result[4],
+                "url": result[5],
+                "author": result[6],
+                "name": result[7],
                 "penalty": 0
             }
             policy = domains[self.domain]["sources"][audio["channel"]]
@@ -205,38 +252,40 @@ async def play(domain):
     while await hasAudience(channelID):
         try:
             track = await audios.getAudio(exclude=exclude)
-            if await equalTracks(track, prevTrack) or not await audios.checkAudio(track):
+            if not track:
+                await log(f"No tracks in database in guild {config['name']}")
+                break
+            if await equalTracks(track, prevTrack):
                 continue
-            message = await audios.getMessage(
-                track["channel"],
-                track["message"]
-            )
             await audios.increment(track)
             uid = audioUID(track)
+            author = client.get_user(track["author"])
+            if not author:
+                author = await client.fetch_user(track["author"])
             domains[domain]["history"] = [uid] + domains[domain]["history"][:-1]
             policy = domains[domain]["sources"][track["channel"]]
             exclude = None
             if policy["isolated"]:
                 exclude = track["channel"]
-            attachment = message.attachments[track["index"]]
-            source = discord.FFmpegPCMAudio(attachment.url, **FFMPEG_OPTIONS)  # load attachment as audio discord can broadcast
+            source = discord.FFmpegPCMAudio(track["url"], **FFMPEG_OPTIONS)  # load attachment as audio discord can broadcast
             if nextEvent:
                 await nextEvent.wait()
             if not await hasAudience(channelID):
                 break
             nextEvent = asyncio.Event()
-            if await audios.checkAudio(track):
+            try:
                 voice_client.play(source, after = lambda x: nextEvent.set())
-            else:
+            except Exception as e:
+                await log(f"Track didn't play, next...")
                 nextEvent = False
             if policy["private"]:
                 await channel.edit(status=f"You are listening to {config['name']}")
             else:
-                await channel.edit(status=f"Now Playing: {message.author.display_name} - {attachment.filename}")
-            #tsince = time()
-            #tsleep = track["length"]
-        except Exception as e:
-            await log(f"Error in guild {guild.name}: {e.with_traceback(None)}")
+                await channel.edit(status=f"Now Playing: {author.display_name} - {track['name']}")
+
+        except Exception:
+            await log(f"Error in guild {guild.name}")
+            await log (traceback.format_exc())
             break
     await log(f"Disconnecting from {guild.name}")
     await voice_client.disconnect()
@@ -245,8 +294,11 @@ async def play(domain):
 @client.event
 async def on_ready():
     await log(f'RVM has logged in as {client.user}')
+    await log(f'Auditing messages in the database...')
+    messages = await getMessages()
+    for m in messages:
+        await rollcall(m)
     for guild in client.guilds:
-        await log(domains)
         if guild.id in domains:
             await log(f"{guild.name} connected and registered")
             if await hasAudience(domains[guild.id]["broadcast"]["channel"]):
@@ -254,27 +306,85 @@ async def on_ready():
         else:
             await log(f"{guild.name} is not registered")
 
-@client.event
-async def on_message(message):
-    if not message.guild.id in domains:
-        return
-    if not message.channel.id in domains[domain := message.guild.id]["sources"]:
-        return
-    audios = AudioHandler(domain)
+async def scan(message: discord.Message | tuple[int, int, int]):
+    """
+    Audits all attachments from either a message object or a reference to one (guild, channel, message)
+    """
+    if type(message) == tuple:
+        message = await (await client.get_channel(message[1])).fetch_message(message[2])
+    attachments = []
+    id = getHash(message)
     for i, attachment in enumerate(message.attachments):
         if length := await validateAttachment(attachment):
             audioData = {
-                "message": message.id,
-                "channel": message.channel.id,
+                "messageID": id,
                 "length": length,
-                "index": i,
-                "dob": message.created_at.timestamp(),
-                "playcount": 0
+                "url": attachment.url,
+                "playcount": 0,
+                "name": attachment.filename,
+                "author": message.author.id
             }
-            #await message.channel.send(audioData)
-            await audios.add(audioData)
+            attachments.append(audioData)
+    return attachments
+
+async def rollcall(message):
+    attachments = await scan(message)
+    if attachments == []:
+        return
+    audios = AudioHandler(domain)
+    existing = await audios.getFromMessage(getHash(message))
+    added = []
+    for a in attachments:
+        found = False
+        for i, e in enumerate(existing):
+            if a["url"] == e["url"]:
+                existing.pop(i)
+                found = True
+        if not found:
+            added.append(a)
+    deleted = existing
+    for a in added:
+        await audios.addAudio(a)
+    for d in deleted:
+        await audios.deleteAudio(d)
+
+@client.event
+async def on_message(message):
+    if not (domain := message.guild.id) in domains:
+        return
+    if not message.channel.id in domains[domain]["sources"]:
+        return
+    # get all audios associated with the message
+    attachments = await scan(message)
+    if attachments == []:
+        return # none - do nothing
+    else:
+        # add all audios
+        audios = AudioHandler(domain)
+        await audios.addMessage(message)
+        for a in attachments:
+            await audios.addAudio(a)
     if not domains[domain]["playing"]:
         await play(domain)
+
+@client.event
+async def on_message_edit(before, after):
+    if not (domain := after.guild.id) in domains:
+        return
+    if not after.channel.id in domains[domain]["sources"]:
+        return
+    # now just need to check if there's any changes
+    # pass over to the rollcall function
+    await rollcall(after)
+
+@client.event
+async def on_message_delete(message):
+    if not (domain := message.guild.id) in domains:
+        return
+    if not message.channel.id in domains[domain]["sources"]:
+        return
+    audios = AudioHandler(domain)
+    await audios.deleteMessage(message)
 
 @client.event
 async def on_voice_state_update(member, before, after):

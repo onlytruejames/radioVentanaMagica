@@ -45,7 +45,7 @@ def getHash(message: discord.Message | tuple):
         return hash((message.guild.id, message.channel.id, message.id))
     elif type(message) == tuple:
         return hash(message)
-    raise ValueError()
+    raise ValueError("Invalid message format in getHash")
 
 async def transaction(statement):
     async with aiosqlite.connect("audio.db") as db:
@@ -55,18 +55,18 @@ async def transaction(statement):
     return results
 
 async def getMessages():
-    messages = await transaction(f"SELECT channel, message FROM messages ORDER BY channel;")
-    channelObjs = {}
+    messages = await transaction(f"SELECT domain, channel, message FROM messages;")
     messageObjs = []
     for m in messages:
-        if not m[0] in channelObjs:
-            channelObjs[m[0]] = client.get_channel(m[0])
         try:
-            messageObjs.append(await channelObjs[m[0]].fetch_message(m[1]))
-        except discord.errors.NotFound:
+            message = await client.get_channel(m[1]).fetch_message(m[2])
+            messageObjs.append(message)
+        except discord.NotFound:
             uid = getHash(m)
             await transaction(f"DELETE FROM messages WHERE messageID={uid};")
             await transaction(f"DELETE FROM attachments WHERE messageID={uid};")
+        except:
+            await log(traceback.format_exc())
 
     return messageObjs
 
@@ -328,24 +328,37 @@ async def scan(message: discord.Message | tuple[int, int, int]):
     return attachments
 
 async def rollcall(message):
+    """
+    Compare all known attachments on a message with its actual attachments, and update the database to reflect reality
+    Assumes message exists
+    """
+
+    # Find the attachments the message actually has
     attachments = await scan(message)
     if attachments == []:
+        
         return
-    audios = AudioHandler(domain)
-    existing = await audios.getFromMessage(getHash(message))
+    audios = AudioHandler(message.guild.id)
+
+    # Find the attachments we think the message has
+    prevAttachments = await audios.getFromMessage(getHash(message))
+
     added = []
     for a in attachments:
         found = False
-        for i, e in enumerate(existing):
+        for e in prevAttachments:
             if a["url"] == e["url"]:
-                existing.pop(i)
+                # the database already knows about this attachment, don't do anything with it
+                prevAttachments.remove(e)
                 found = True
+                break
         if not found:
             added.append(a)
-    deleted = existing
+
+    # All attachments left in prevAttachments have been deleted
     for a in added:
         await audios.addAudio(a)
-    for d in deleted:
+    for d in prevAttachments:
         await audios.deleteAudio(d)
 
 @client.event

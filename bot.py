@@ -130,7 +130,7 @@ class AudioHandler:
 
     async def getAudio(self, exclude=None):
         "Get one of the recent audio messages"
-        results = await transaction("SELECT messages.channel, messages.messageID, attachments.length, messages.dob, attachments.playcount, attachments.url, messages.author, attachments.name FROM attachments JOIN messages ON attachments.messageID = messages.messageID;")
+        results = await transaction(f"SELECT messages.channel, messages.messageID, attachments.length, messages.dob, attachments.playcount, attachments.url, messages.author, attachments.name FROM attachments JOIN messages ON attachments.messageID = messages.messageID WHERE messages.domain = {self.domain};")
         if len(results) == 0:
             return None
         channels = {}

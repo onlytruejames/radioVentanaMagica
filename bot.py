@@ -115,15 +115,9 @@ class AudioHandler:
         } for r in results]
     
     async def deleteMessage(self, message: discord.Message | tuple[int, int, int]):
-        if type(message) == discord.Message:
-            message = (
-                message.guild.id,
-                message.channel.id,
-                message.id
-            )
-        id = hash(message)
-        await transaction(f"DELETE FROM messages WHERE messageID={message};")
-        await transaction(f"DELETE FROM attachments WHERE messageID={message};")
+        id = getHash(message)
+        await transaction(f"DELETE FROM messages WHERE messageID={id};")
+        await transaction(f"DELETE FROM attachments WHERE messageID={id};")
 
     def list(self):
         return "\n".join([str(a) for a in self.audios])

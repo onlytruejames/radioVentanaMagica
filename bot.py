@@ -4,6 +4,7 @@ by James Young (resampler.xyz)
 made for The Magic Window
 
 # TODO:
+ - Standardise several datatypes. This code runs on thoughts and prayers
  - Song announcements in channels
  - History reading
  - Make errors fail loud enough that we know about it
@@ -49,30 +50,50 @@ for domain in domains:
 
 domains = tmpDomains
 
-def audioUID(audio):
+def audioUID(audio: dict) -> int:
+    """
+    audio: Standard (?) dictionary describing an audio
+    
+    Returns an integer hash uniquely identifying the audio
+
+    Audios are uniquely identifiable by their messageID and their url
+    """
     return hash((audio["messageID"], audio["url"]))
 
-def getHash(message: discord.Message | tuple):
-    """Takes message object or a tuple (guild, channel, message)"""
+def getHash(message: discord.Message | tuple) -> int:
+    """
+    message: discord.Message object or tuple (guild, channel, message)
+    
+    Returns an integer hash uniquely identifying the message
+    """
     if type(message) == discord.Message:
         return hash((message.guild.id, message.channel.id, message.id))
-    elif type(message) == tuple:
+    elif type(message) == tuple and len(message) == 3:
         return hash(message)
     raise ValueError("Invalid message format in getHash")
 
-async def transaction(statement):
+async def transaction(statement: str) -> list:
+    """
+    statement: string
+
+    Execute a line of sql, commit, tidy up, and return anything found by the statement
+    """
     async with aiosqlite.connect("audio.db") as db:
         cur = await db.execute(statement)
         results = await cur.fetchall()
         await db.commit()
     return results
 
-async def getMessages():
+async def getMessages() -> list[discord.Message]:
+    """
+    Retrieve all messages stored in the database. Delete any that no longer exist.
+    """
     messages = await transaction(f"SELECT domain, channel, message FROM messages;")
     messageObjs = []
     for m in messages:
+        audios = AudioHandler(messages[0])
         try:
-            message = await client.get_channel(m[1]).fetch_message(m[2])
+            message = await audios.getMessage(messages[1], messages[2])
             messageObjs.append(message)
         except discord.NotFound:
             uid = getHash(m)
@@ -84,41 +105,73 @@ async def getMessages():
     return messageObjs
 
 class AudioHandler:
+    """
+    This is more of a namespace than anything and needs to be replaced with more suitable classes.
+    I don't even think some of these functions would be missed
+    """
     def __init__(self, domain: str):
         self.domain = domain
 
-    async def getMessage(self, channel: int, message: int):
+    async def getMessage(self, channel: int, message: int) -> discord.Message:
+        """
+        channel: The channel id of the channel the message is in
+        message: The message id of the message
+
+        Returns a message based on channel and message
+        Can probably be moved
+        """
         try:
             c = client.get_channel(channel)
             m = await c.fetch_message(message)
             return m
-        except Exception as e:
-            return False
+        except discord.NotFound as e:
+            raise ValueError("Message does not exist")
 
-    async def checkAudio(self, audio) -> bool:
+    async def checkAudio(self, audio: dict) -> bool:
+        """
+        audio: Standard (?) audio dictionary
+        
+        Check if the given audio exists and delete if not.
+        
+        Can probably be broken into two seperate methods
+        """
         try:
             message = await self.getMessage(audio["channel"], audio["message"])
-            assert message
             return True
         except Exception:
             await log(traceback.format_exc())
             await self.deleteAudio(audio)
             return False
 
-    async def addMessage(self, message: discord.Message):
+    async def addMessage(self, message: discord.Message) -> None:
+        """
+        message: The message we want to store
+        Add message to database
+        """
         id = getHash(message)
         await transaction(f"INSERT INTO messages VALUES ({self.domain}, {message.channel.id}, {message.id}, {id}, {message.created_at.timestamp()}, {message.author.id});")
 
-    async def addAudio(self, audio: dict):
+    async def addAudio(self, audio: dict) -> None:
+        """
+        audio: The audio we want to store
+        Add message to database
+        """
         await transaction(f"INSERT INTO attachments VALUES ({audio['messageID']}, 0, '{audio['url']}', {audio['length']}, '{audio['name']}');")
 
-    async def deleteAudio(self, audio: dict):
+    async def deleteAudio(self, audio: dict) -> None:
         await transaction(f"DELETE FROM attachments WHERE messageID={audio['messageID']} and url='{audio['url']}';")
 
-    async def increment(self, audio):
+    async def increment(self, audio: dict) -> None:
+        """
+        Increment the playcount of the given audio.
+        This needs a better home
+        """
         await transaction(f"UPDATE attachments SET playcount={audio['playcount'] + 1} WHERE messageID='{audio['messageID']}' and url='{audio['url']}';")
 
     async def getFromMessage(self, messageID: int):
+        """
+        Find all attachments in the database associated with this message
+        """
         results = await transaction(f"SELECT messageID, playcount, url, length FROM attachments WHERE messageID={messageID};")
         return [{
             "messageID": r[0],
@@ -128,6 +181,9 @@ class AudioHandler:
         } for r in results]
     
     async def deleteMessage(self, message: discord.Message | tuple[int, int, int]):
+        """
+        Delete this message and all its attachments from the database
+        """
         id = getHash(message)
         await transaction(f"DELETE FROM messages WHERE messageID={id};")
         await transaction(f"DELETE FROM attachments WHERE messageID={id};")

@@ -1,3 +1,16 @@
+"""
+RADIO VENTANA MAGICA
+by James Young (resampler.xyz)
+made for The Magic Window
+
+# TODO:
+ - Song announcements in channels
+ - History reading
+ - Make errors fail loud enough that we know about it
+ - Track voting
+ - Skipping functions (who can do this...)
+"""
+
 import asyncio, random, discord, aiosqlite, aiohttp, json, traceback
 from time import time
 from pydub import AudioSegment
@@ -210,7 +223,7 @@ async def validateAttachment(attachment):
         await attachment.save(stream)
         seg = AudioSegment.from_file(stream)
         length = seg.duration_seconds
-        #assert length < 600
+        assert length < 600
         return length
     except Exception as e:
         return False

@@ -5,11 +5,18 @@ made for The Magic Window
 
 # TODO:
  - Standardise several datatypes. This code runs on thoughts and prayers
+    · Semistandard audio dicts need replacing. For example...
+        + Strict definitions to make sure they aren't missing bits
+        + Automatic db integration
+        + Check if two audios are equivalent
+        + Better name
  - Song announcements in channels
  - History reading
+    · On start, check the last n messages
  - Make errors fail loud enough that we know about it
  - Track voting
- - Skipping functions (who can do this...)
+ - Skipping functions (permissions: who can do this...)
+ - Stricter config files
 """
 
 import asyncio, random, discord, aiosqlite, aiohttp, json, traceback
@@ -107,6 +114,7 @@ async def getMessages() -> list[discord.Message]:
 class AudioHandler:
     """
     This is more of a namespace than anything and needs to be replaced with more suitable classes.
+    
     I don't even think some of these functions would be missed
     """
     def __init__(self, domain: str):
@@ -115,9 +123,11 @@ class AudioHandler:
     async def getMessage(self, channel: int, message: int) -> discord.Message:
         """
         channel: The channel id of the channel the message is in
+        
         message: The message id of the message
 
         Returns a message based on channel and message
+        
         Can probably be moved
         """
         try:
@@ -146,6 +156,7 @@ class AudioHandler:
     async def addMessage(self, message: discord.Message) -> None:
         """
         message: The message we want to store
+        
         Add message to database
         """
         id = getHash(message)
@@ -154,7 +165,8 @@ class AudioHandler:
     async def addAudio(self, audio: dict) -> None:
         """
         audio: The audio we want to store
-        Add message to database
+        
+        Add audio to database
         """
         await transaction(f"INSERT INTO attachments VALUES ({audio['messageID']}, 0, '{audio['url']}', {audio['length']}, '{audio['name']}');")
 
@@ -164,6 +176,7 @@ class AudioHandler:
     async def increment(self, audio: dict) -> None:
         """
         Increment the playcount of the given audio.
+        
         This needs a better home
         """
         await transaction(f"UPDATE attachments SET playcount={audio['playcount'] + 1} WHERE messageID='{audio['messageID']}' and url='{audio['url']}';")
@@ -188,11 +201,14 @@ class AudioHandler:
         await transaction(f"DELETE FROM messages WHERE messageID={id};")
         await transaction(f"DELETE FROM attachments WHERE messageID={id};")
 
-    def list(self):
-        return "\n".join([str(a) for a in self.audios])
-
-    async def getAudio(self, exclude=None):
-        "Get one of the recent audio messages"
+    async def getAudio(self, exclude=None) -> dict:
+        """
+        exclude: int - ID of channel we want to avoid
+        
+        Choose the next song to play
+        
+        Returns a standard(?) audio dict
+        """
         results = await transaction(f"SELECT messages.channel, messages.messageID, attachments.length, messages.dob, attachments.playcount, attachments.url, messages.author, attachments.name FROM attachments JOIN messages ON attachments.messageID = messages.messageID WHERE messages.domain = {self.domain};")
         if len(results) == 0:
             return None
@@ -270,36 +286,58 @@ class AudioHandler:
         results = [r for r in results if r["penalty"] == minPenalty]
         return random.choice(results)
 
-async def validateAttachment(attachment):
+async def validateAttachment(attachment: discord.Attachment) -> float | int | bool:
+    """
+    attachment: discord.Attachment
+
+    Get the length of the audio file, and in doing so ensure the file is not too large or too long
+
+    Returns False if invalid, returns a number if not
+    """
     try:
         assert attachment.content_type.startswith("audio/")
+        # parameterise?
         assert attachment.size < 100000000
-        
+
+        # in future, imply length from header rather than whole file?
         stream = BytesIO()
         await attachment.save(stream)
         seg = AudioSegment.from_file(stream)
         length = seg.duration_seconds
+
+        # parameterise?
         assert length < 600
         return length
     except Exception as e:
         return False
 
-async def equalTracks(t1, t2):
+async def equalTracks(t1: dict, t2: dict) -> bool:
+    """
+    t1, t2: Semi-standard audio dicts
+    
+    Check if they're equal. This functionality will be replicated in a future object definition
+    """
     if not t1 or not t2:
         return False
-    return (
-        t1["channel"] == t2["channel"] and
-        t1["message"] == t2["message"] and
-        t1["index"] == t2["index"]
-    )
+    return audioUID(t1) == audioUID(t2)
 
-async def hasAudience(channel) -> bool:
+async def hasAudience(channel: int) -> bool:
+    """
+    channel: int - The channel id of the voice channel
+
+    Check if anyone's in the vc
+    """
     channel = client.get_channel(channel)
     if len(channel.voice_states) == 0:
         return False
     return not (len(channel.voice_states) == 1 and client.user.id in channel.voice_states)
 
-async def play(domain):
+async def play(domain: int):
+    """
+    domain: guild id as int
+
+    This is more or less the mainloop
+    """
     if domains[domain]["playing"]:
         pass
     domains[domain]["playing"] = True
@@ -393,6 +431,7 @@ async def scan(message: discord.Message | tuple[int, int, int]):
 async def rollcall(message):
     """
     Compare all known attachments on a message with its actual attachments, and update the database to reflect reality
+    
     Assumes message exists
     """
 

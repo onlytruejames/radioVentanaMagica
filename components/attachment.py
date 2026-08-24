@@ -1,9 +1,7 @@
 from typing import Union
-
-import discord
+import discord, json, traceback
 from components import helpers, config
-from io import BytesIO
-from pydub import AudioSegment
+from ffmpeg.asyncio import FFmpeg
 
 class Attachment:
     """
@@ -134,16 +132,21 @@ class Attachment:
             # parameterise?
             assert attachment.size < 100000000
 
-            # in future, imply length from header rather than whole file?
-            stream = BytesIO()
-            await attachment.save(stream)
-            seg = AudioSegment.from_file(stream)
-            length = seg.duration_seconds
+            # adapted from https://python-ffmpeg.readthedocs.io/en/latest/examples/querying-metadata/
+            ffprobe = FFmpeg(executable="ffprobe").input(
+                attachment.url,
+                print_format="json", # ffprobe will output the results in JSON format
+                show_streams=None,
+            )
+
+            media = json.loads(await ffprobe.execute())
+            length = float(media['streams'][0]['duration'])
 
             # parameterise?
             assert length < 600
             return length
         except Exception:
+            await helpers.log(traceback.format_exc())
             return False
 
     async def refreshPlaycount(self):
@@ -167,7 +170,7 @@ class Attachment:
         Audits all attachment from either a message object or a reference to one (guild, channel, message)
         """
         if type(message) == tuple:
-            message = await (await config.client.get_channel(message[1])).fetch_message(message[2])
+            message = await (config.client.get_channel(message[1])).fetch_message(message[2])
         attachments = []
         for attachment in message.attachments:
             if attachment := await Attachment.fromAttachment(message, attachment):

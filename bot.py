@@ -5,6 +5,7 @@ made for The Magic Window
 """
 
 # TODO:
+# - Memory optimisations; this has been caught taking up >1gb and it should *not* be doing that
 # - Standardise certain datatypes. So far:
 #    · "Audios" -> Attachments
 #    · Removed AudioHandler
@@ -56,8 +57,7 @@ async def getMessages() -> list[discord.Message]:
             messageObjs.append(message)
         except discord.NotFound:
             uid = helpers.getMessageHash((m["domain"], m["channel"], m["message"]))
-            await helpers.transaction(f"DELETE FROM messages WHERE messageID={uid};")
-            await helpers.transaction(f"DELETE FROM attachments WHERE messageID={uid};")
+            await helpers.transaction(f"DELETE FROM messages WHERE messageID={uid};DELETE FROM attachments WHERE messageID={uid};")
         except:
             await helpers.log(traceback.format_exc())
 

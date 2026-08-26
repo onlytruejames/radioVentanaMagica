@@ -70,3 +70,13 @@ async def deleteMessage(message: discord.Message | tuple[int, int, int]):
     """
     id = getMessageHash(message)
     await transaction(f"DELETE FROM messages WHERE messageID={id}; DELETE FROM attachments WHERE messageID={id};")
+
+async def validCDNURL(url: str) -> bool:
+    """
+    url: string
+
+    Checks if a given URL is still valid. Discord CDN links are only valid for around 24hr.
+    """
+    async with aiohttp.ClientSession() as session:
+        async with session.head(url) as got:
+            return got.status == 200

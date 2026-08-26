@@ -172,9 +172,10 @@ async def play(domain: int):
 
     This is more or less the mainloop
     """
+    channelID = domains[domain]["broadcast"]["channel"]
 
     # lazy lock on this domain
-    if domains[domain]["playing"]:
+    if domains[domain]["playing"] or not await hasAudience(channelID):
         pass
     domains[domain]["playing"] = True
 
@@ -184,7 +185,6 @@ async def play(domain: int):
     exclude = None
     nextEvent = False
 
-    channelID = domains[domain]["broadcast"]["channel"]
     channel = config.client.get_channel(channelID)
     voice_client = await channel.connect()
     # END BORING CONFIG
@@ -198,6 +198,10 @@ async def play(domain: int):
                 # nothing to do... disappear
                 await helpers.log(f"No tracks in database in guild {config.config['name']}")
                 break
+
+            if not await helpers.validCDNURL(track.url):
+                await rollcall(domain, track.channel, track.message)
+                continue
 
             # see if we have the user in memory
             author = config.client.get_user(track.author)

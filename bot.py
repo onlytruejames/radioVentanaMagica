@@ -22,6 +22,7 @@ made for The Magic Window
 #    · Length and filesize over which attachments are rejected
 # - More types of attachments, like soundcloud links
 # - Write README
+# - Bug found: Attachment URLs are signed wth a token that changes every 24hr. This resets playcounts.
 
 
 import asyncio, random, discord, traceback
@@ -52,7 +53,7 @@ async def getMessages() -> list[discord.Message]:
     messageObjs = []
     for m in messages:
         try:
-            message = await helpers.getMessage(m["channel"], m["message"])
+            message = await helpers.getMessage(m["domain"], m["channel"], m["message"])
             messageObjs.append(message)
         except discord.NotFound:
             uid = helpers.getMessageHash((m["domain"], m["channel"], m["message"]))
@@ -70,14 +71,6 @@ async def addMessage(domain, message: discord.Message) -> None:
     """
     id = helpers.getMessageHash(message)
     await helpers.transaction(f"INSERT INTO messages VALUES ({domain}, {message.channel.id}, {message.id}, {id}, {message.created_at.timestamp()}, {message.author.id});")
-    
-async def deleteMessage(message: discord.Message | tuple[int, int, int]):
-    """
-    Delete this message and all its attachment from the database
-    """
-    id = helpers.getMessageHash(message)
-    await helpers.transaction(f"DELETE FROM messages WHERE messageID={id};")
-    await helpers.transaction(f"DELETE FROM attachments WHERE messageID={id};")
 
 async def getAudio(domain: int, exclude=None) -> Attachment:
     """
@@ -221,8 +214,13 @@ async def play(domain: int):
             if policy["isolated"]:
                 exclude = track.channel
 
-            # preload the track, then wait until the previous track finishes
-            source = loadTrack(track.url)
+            # preload the track, then wait until the previous track finishes. if it fails, rollcall its message and choose a different track
+            try:
+                source = loadTrack(track.url)
+            except:
+                msg = await helpers.getMessage(domain, track.channel, track.message)
+                if msg:
+                    await rollcall(msg)
             if nextEvent:
                 await nextEvent.wait()
 
@@ -271,37 +269,49 @@ async def on_ready():
         else:
             await helpers.log(f"{guild.name} is not registered")
 
-async def rollcall(message: discord.Message) -> None:
+async def rollcall(message: discord.Message | tuple[int, int, int]) -> None:
     """
+    message: discord.Message object OR tuple reference to message (guild, channel, message)
+
     Compare all known attachments on a message with its actual attachments, and update the database to reflect reality
 
-    Assumes message exists
+    Deletes message from database if it does not exist
     """
+    if type(message) == tuple:
+        message = helpers.getMessage(*message)
+        if not message:
+            await helpers.deleteMessage(message)
+            return
 
     # Find the attachments the message actually has
     attachments = await Attachment.getAttachments(message)
     if attachments == []:
-        await deleteMessage(message)
+        # delete message AND its attachments
+        await helpers.deleteMessage(message)
         return
 
-    # Find the attachments we think the message has
+    # Find the attachments the database thinks the message has
     prevattachment = await Attachment.getAttachmentsWhere(f"messageID = {helpers.getMessageHash(message)}")
 
     added = []
-    for a in attachments:
+    for current in attachments:
         found = False
-        for e in prevattachment:
-            if a == e:
-                # the database already knows about this attachment, don't do anything with it
-                prevattachment.remove(e)
+        for prev in prevattachment:
+            # check if we know about this attachment, updating the attachment hash if needed
+            if prev == current:
+                # database knows about this attachment
+                if prev.url != current.url:
+                    # update to new url
+                    await helpers.transaction(f"UPDATE attachments SET url='{current.url}' WHERE url='{prev.url}';")
+                prevattachment.remove(prev)
                 found = True
                 break
         if not found:
-            added.append(a)
+            added.append(current)
 
     # All attachments left in prevattachment have been deleted
-    for a in added:
-        await a.addAttachment()
+    for current in added:
+        await current.addAttachment()
     for d in prevattachment:
         await d.delete()
 
@@ -339,7 +349,7 @@ async def on_message_delete(message):
         return
     if not message.channel.id in domains[domain]["sources"]:
         return
-    await deleteMessage(message)
+    await helpers.deleteMessage(message)
 
 @config.client.event
 async def on_voice_state_update(member, before, after):

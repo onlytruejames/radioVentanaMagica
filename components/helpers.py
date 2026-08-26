@@ -35,22 +35,26 @@ async def transaction(statement: str) -> list[aiosqlite.Row]:
         await db.commit()
     return results
 
-async def getMessage(channel: int, message: int) -> discord.Message:
+async def getMessage(guild: int, channel: int, message: int) -> discord.Message | bool:
     """
+    guild: id of guild the message belongs to
+
     channel: The channel id of the channel the message is in
     
     message: The message id of the message
 
-    Returns a message based on channel and message
+    Returns a message based on channel and message. False if it doesn't exist
     """
     try:
         c = config.client.get_channel(channel)
         m = await c.fetch_message(message)
         return m
-    except discord.NotFound as e:
-        raise e
-    except Exception:
+    except discord.NotFound:
+        await deleteMessage((guild, channel, message))
+        return False
+    except Exception as e:
         await log(traceback.format_exc())
+        raise e
 
 async def log(msg):
     # send logs to discord webhook or print
@@ -59,3 +63,10 @@ async def log(msg):
             await session.post(config.config["log"], data={"content": msg})
     except:
         print(msg)
+
+async def deleteMessage(message: discord.Message | tuple[int, int, int]):
+    """
+    Delete this message and all its attachment from the database
+    """
+    id = getMessageHash(message)
+    await transaction(f"DELETE FROM messages WHERE messageID={id}; DELETE FROM attachments WHERE messageID={id};")

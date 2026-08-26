@@ -28,7 +28,7 @@ class Attachment:
         # composite key: REQUIRED
         self.messageID = messageID
         self.url = url
-        self.uid = hash((messageID, url))
+        self.uid = hash((messageID, url.split("?")[0]))
 
         # present when created from attachment or database: we will know these
         self.length = length
@@ -170,12 +170,13 @@ class Attachment:
         if not (t := type(value)) == Attachment:
             return False
         return value.uid == self.uid
+    
     async def getAttachments(message: discord.Message | tuple[int, int, int]) -> list['Attachment']:
         """
         Audits all attachment from either a message object or a reference to one (guild, channel, message)
         """
         if type(message) == tuple:
-            message = await (config.client.get_channel(message[1])).fetch_message(message[2])
+            message = await helpers.getMessage(message[0], message[1], message[2])
         attachments = []
         for attachment in message.attachments:
             if attachment := await Attachment.fromAttachment(message, attachment):

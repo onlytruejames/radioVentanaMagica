@@ -17,7 +17,7 @@ made for The Magic Window
 # - Make errors fail loud enough that we know about it
 # - Track voting
 # - Skipping functions (permissions: who can do this...)
-# - Stricter config files and paramaterise things like
+# - Config files: paramaterise things like
 #    · Whether to use PCM or Opus
 #    · Length and filesize over which attachments are rejected
 # - More types of attachments, like soundcloud links
@@ -31,7 +31,16 @@ from components.attachment import Attachment
 import components.helpers as helpers
 import components.config as config
 
+# Preselect the audio source generator
+# Tl;dr: PCM is uncompressed, Opus is compressed
 FFMPEG_OPTIONS = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5','options': '-vn'}
+match config.config["broadcastEncoding"]:
+    case "opus":
+        loadTrack = lambda trackURL: discord.FFmpegOpusAudio(trackURL, **FFMPEG_OPTIONS)
+    case "pcm":
+        loadTrack = lambda trackURL: discord.FFmpegPCMAudio(trackURL, **FFMPEG_OPTIONS)
+    case _:
+        raise ValueError(f"Unsupported broadcast encoding: {config.config['broadcastEncoding']}")
 
 domains = config.domains
 
@@ -197,7 +206,6 @@ async def play(domain: int):
                 await helpers.log(f"No tracks in database in guild {config.config['name']}")
                 break
 
-            await track.increment()
             # see if we have the user in memory
             author = config.client.get_user(track.author)
             if not author:
@@ -213,9 +221,8 @@ async def play(domain: int):
             if policy["isolated"]:
                 exclude = track.channel
 
-            # Tl;dr: PCM is uncompressed, Opus is compressed
             # preload the track, then wait until the previous track finishes
-            source = discord.FFmpegOpusAudio(track.url, **FFMPEG_OPTIONS)  # load attachment as audio discord can broadcast
+            source = loadTrack(track.url)
             if nextEvent:
                 await nextEvent.wait()
 
@@ -225,6 +232,7 @@ async def play(domain: int):
             nextEvent = asyncio.Event()
             try:
                 voice_client.play(source, after = lambda x: nextEvent.set())
+                await track.increment()
             except Exception:
                 await helpers.log(f"Track didn't play, {traceback.format_exc()}")
                 nextEvent = False
@@ -245,7 +253,7 @@ async def play(domain: int):
     await voice_client.disconnect()
     domains[domain]["playing"] = False
 
-    # parameterise?
+    # clear history to not mess with the next person that listens
     domains[domain]["history"] = [0 for a in domains[domain]["history"]]
 
 @config.client.event

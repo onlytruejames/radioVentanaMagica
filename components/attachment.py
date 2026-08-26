@@ -47,7 +47,7 @@ class Attachment:
         
         If the attachment is too big or long, return False
         """
-        if length := await Attachment.validateAttachment(attachment):
+        if length := await Attachment.validateAttachment(message, attachment):
             return Attachment(
                 helpers.getMessageHash(message),
                 attachment.url,
@@ -123,8 +123,9 @@ class Attachment:
         self.playcount = pc
         await helpers.transaction(f"UPDATE attachments SET playcount={pc} WHERE messageID='{self.messageID}' and url='{self.url}';")
 
-    async def validateAttachment(attachment: discord.Attachment) -> float | int | bool:
+    async def validateAttachment(message: discord.Message, attachment: discord.Attachment) -> float | int | bool:
         """
+        message: discord.Message
         attachment: discord.Attachment
 
         Get the length of the audio file, and in doing so ensure the file is not too large or too long
@@ -133,8 +134,7 @@ class Attachment:
         """
         try:
             assert attachment.content_type.startswith("audio/")
-            # parameterise?
-            assert attachment.size < 100000000
+            assert attachment.size < config.config["fileSizeLimit"]
 
             # adapted from https://python-ffmpeg.readthedocs.io/en/latest/examples/querying-metadata/
             ffprobe = FFmpeg(executable="ffprobe").input(
@@ -146,12 +146,13 @@ class Attachment:
             media = json.loads(await ffprobe.execute())
             length = float(media['streams'][0]['duration'])
 
-            # parameterise?
-            assert length < 600
+            assert length < config.domains[message.guild.id]["sources"][message.channel.id]["maxLength"]
             return length
-        except Exception:
-            await helpers.log(traceback.format_exc())
+        except AssertionError:
             return False
+        except Exception as e:
+            await helpers.log(traceback.format_exc())
+            raise e
 
     async def refreshPlaycount(self):
         """

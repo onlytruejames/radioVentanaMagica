@@ -9,6 +9,15 @@ confSchema = schema.Schema(
         "name": schema.And(str, len),
         schema.Optional("log"): str,
         "key": str,
+        schema.Optional("fileSizeLimit", default=100000000): schema.And(
+            schema.Or(float, int),
+            schema.Use(lambda x: x * 1000000) # to MB
+        ),
+        schema.Optional("broadcastEncoding", default="opus"): schema.And(
+            str,
+            str.lower,
+            lambda x: x in ["opus", "pcm"]
+        ),
         "domains": {
             schema.Use(int): {
                 "sources": {
@@ -17,7 +26,8 @@ confSchema = schema.Schema(
                         schema.Optional("prefSize", default=15): int,
                         schema.Optional("isolated", default=False): bool,
                         schema.Optional("private", default=False): bool,
-                        schema.Optional("sampleSize", default=10): int
+                        schema.Optional("sampleSize", default=10): int,
+                        schema.Optional("maxLength", default=600): schema.Or(float, int)
                     }
                 },
                 "broadcast": {

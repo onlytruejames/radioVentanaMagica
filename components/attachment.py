@@ -1,3 +1,7 @@
+"""
+Module for code related to the Attachment model
+"""
+
 from typing import Union
 import discord, json, traceback
 from components import helpers, config

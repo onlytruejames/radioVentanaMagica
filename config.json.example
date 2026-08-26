@@ -6,43 +6,29 @@
         "GUILD ID": {
             "sources": {
                 "STRING: TEXT CHANNEL ID": {
-                    "ttl": 300,
-                    "prefSize": 15,
-                    "isolated": false,
-                    "private": false,
-                    "sampleSize": 10
+                    "ttl": 300, (OPTIONAL)
+                    "prefSize": 15, (OPTIONAL)
+                    "isolated": false, (OPTIONAL)
+                    "private": false, (OPTIONAL)
+                    "sampleSize": 10 (OPTIONAL)
                 },
                 "STRING: DIFFERENT TEXT CHANNEL ID": {
-                    "ttl": -1,
-                    "prefSize": 15,
-                    "isolated": true,
-                    "private": true,
-                    "sampleSize": 1
+                    "ttl": -1, (OPTIONAL)
+                    "prefSize": 15, (OPTIONAL)
+                    "isolated": true, (OPTIONAL)
+                    "private": true, (OPTIONAL)
+                    "sampleSize": 1 (OPTIONAL)
                 }
             },
             "broadcast": {
                 "channel": "INTEGER: VOICE CHANNEL ID"
             },
-            "history": [0, 0, 0, 0, 0, 0, 0],
-            "playing": false,
-            "votes": {
-                "minimum": 2,
-                "ratio": 0.3,
-                "up": {
-                    "type": "string",
-                    "id": "arrow_up"
-                },
-                "down": {
-                    "type": "string",
-                    "id": "arrow_down"
-                }
-            }
+            "history": INTEGER SIZE OF STORED HISTORY
         },
         "DIFFERENT GUILD ID": {
                 "sources": {
                     "STRING: TEXT CHANNEL ID": {
                         "ttl": 300,
-                        "prefSize": 15,
                         "isolated": false,
                         "private": false,
                         "sampleSize": 10
@@ -50,16 +36,11 @@
                     "STRING: DIFFERENT TEXT CHANNEL ID": {
                         "ttl": -1,
                         "prefSize": 15,
-                        "isolated": true,
-                        "private": true,
-                        "sampleSize": 1
                     }
                 },
                 "broadcast": {
                     "channel": "INTEGER: VOICE CHANNEL ID"
                 },
-                "history": [0, 0, 0, 0, 0, 0, 0],
-                "playing": false
             }
     }
 }

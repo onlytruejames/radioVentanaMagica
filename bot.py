@@ -5,7 +5,9 @@ made for The Magic Window
 """
 
 # TODO:
-# - Memory optimisations; this has been caught taking up >1gb and it should *not* be doing that
+# - Memory/Time optimisations; this has been caught taking up >1gb and it should *not* be doing that
+#    · Switched PCM -> Opus for broadcasting
+#    · pydub -> ffprobe for finding the length of a file
 # - Standardise certain datatypes. So far:
 #    · "Audios" -> Attachments
 #    · Removed AudioHandler
@@ -31,19 +33,7 @@ import components.config as config
 
 FFMPEG_OPTIONS = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5','options': '-vn'}
 
-domains = config.config["domains"]
-
-# casting to the right datatypes
-tmpDomains = {}
-for domain in domains:
-    tmp = domains[domain]
-    tmpSources = {}
-    for source in tmp["sources"]:
-        tmpSources[int(source)] = tmp["sources"][source]
-    tmp["sources"] = tmpSources
-    tmpDomains[int(domain)] = tmp
-
-domains = tmpDomains
+domains = config.domains
 
 async def getMessages() -> list[discord.Message]:
     """
@@ -255,6 +245,9 @@ async def play(domain: int):
     await voice_client.disconnect()
     domains[domain]["playing"] = False
 
+    # parameterise?
+    domains[domain]["history"] = [0 for a in domains[domain]["history"]]
+
 @config.client.event
 async def on_ready():
     await helpers.log(f'RVM has logged in as {config.client.user}')
@@ -345,9 +338,9 @@ async def on_voice_state_update(member, before, after):
     channel = after.channel
     if member.id == config.client.user.id or not channel:
         return
-    if not domains[channel.guild.id]["broadcast"]["channel"] == channel.id:
-        return
     if not channel.guild.id in domains:
+        return
+    if not domains[channel.guild.id]["broadcast"]["channel"] == channel.id:
         return
     if not domains[channel.guild.id]["playing"]:
         await play(channel.guild.id)

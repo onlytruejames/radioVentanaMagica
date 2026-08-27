@@ -4,8 +4,10 @@ Module for code related to the Attachment model
 
 from typing import Union
 import discord, json, traceback
-from components import helpers, config
+from components import config, logging, database
+from components.message import getMessageHash
 from ffmpeg.asyncio import FFmpeg
+import aiohttp
 
 class Attachment:
     """
@@ -49,7 +51,7 @@ class Attachment:
         """
         if length := await Attachment.validateAttachment(message, attachment):
             return Attachment(
-                helpers.getMessageHash(message),
+                getMessageHash(message),
                 attachment.url,
                 length,
                 attachment.filename,
@@ -85,12 +87,12 @@ class Attachment:
         playcount
         """
         if len(condition) == 0:
-            results = await helpers.transaction("SELECT * FROM attachments JOIN messages ON attachments.messageID = messages.messageID;")
+            results = await database.transaction("SELECT * FROM attachments JOIN messages ON attachments.messageID = messages.messageID;")
         else:
             if ";" in condition:
                 raise SyntaxError("Semicolons not allowed in conditions")
             condition = condition.replace("messageID", "attachments.messageID")
-            results = await helpers.transaction(f"SELECT * FROM attachments JOIN messages ON attachments.messageID = messages.messageID WHERE {condition};")
+            results = await database.transaction(f"SELECT * FROM attachments JOIN messages ON attachments.messageID = messages.messageID WHERE {condition};")
 
         return [Attachment(
             result["messageID"],
@@ -105,14 +107,14 @@ class Attachment:
         ) for result in results]
 
     async def delete(self) -> None:
-        await helpers.transaction(f"DELETE FROM attachments WHERE messageID={self.messageID} and url='{self.url}';")
+        await database.transaction(f"DELETE FROM attachments WHERE messageID={self.messageID} and url='{self.url}';")
         del self
 
     async def addAttachment(self) -> None:
         """
         Add this attachment to the database
         """
-        await helpers.transaction(f"INSERT INTO attachments VALUES ({self.messageID}, 0, '{self.url}', {self.length}, '{self.name}');")
+        await database.transaction(f"INSERT INTO attachments VALUES ({self.messageID}, 0, '{self.url}', {self.length}, '{self.name}');")
 
     async def increment(self) -> None:
         """
@@ -121,7 +123,7 @@ class Attachment:
         await self.refreshPlaycount()
         pc = self.playcount + 1
         self.playcount = pc
-        await helpers.transaction(f"UPDATE attachments SET playcount={pc} WHERE messageID='{self.messageID}' and url='{self.url}';")
+        await database.transaction(f"UPDATE attachments SET playcount={pc} WHERE messageID='{self.messageID}' and url='{self.url}';")
 
     async def validateAttachment(message: discord.Message, attachment: discord.Attachment) -> float | int | bool:
         """
@@ -151,7 +153,7 @@ class Attachment:
         except AssertionError:
             return False
         except Exception as e:
-            await helpers.log(traceback.format_exc())
+            await logging.log(traceback.format_exc())
             raise e
 
     async def refreshPlaycount(self):
@@ -160,7 +162,7 @@ class Attachment:
         """
         if self.playcount:
             return self.playcount
-        pc = await helpers.transaction(f"SELECT playcount FROM attachments WHERE messageID={self.messageID} and url='{self.url}';")
+        pc = await database.transaction(f"SELECT playcount FROM attachments WHERE messageID={self.messageID} and url='{self.url}';")
         try:
             return pc[0]["playcount"]
         except:
@@ -171,14 +173,20 @@ class Attachment:
             return False
         return value.uid == self.uid
     
-    async def getAttachments(message: discord.Message | tuple[int, int, int]) -> list['Attachment']:
+    async def getAttachments(message: discord.Message) -> list['Attachment']:
         """
-        Audits all attachment from either a message object or a reference to one (guild, channel, message)
+        Audits all attachments from a discord.Message object
         """
-        if type(message) == tuple:
-            message = await helpers.getMessage(message[0], message[1], message[2])
         attachments = []
         for attachment in message.attachments:
             if attachment := await Attachment.fromAttachment(message, attachment):
                 attachments.append(attachment)
         return attachments
+    
+    async def validCDNURL(self) -> bool:
+        """
+        Checks if this attachment's URL is still valid. Discord CDN links are only valid for around 24hr.
+        """
+        async with aiohttp.ClientSession() as session:
+            async with session.head(self.url) as got:
+                return got.status == 200

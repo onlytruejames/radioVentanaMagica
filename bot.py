@@ -5,21 +5,15 @@ made for The Magic Window
 """
 
 # TODO:
-# - Memory/Time optimisations; this has been caught taking up >1gb and it should *not* be doing that
-#    · Switched PCM -> Opus for broadcasting
-#    · pydub -> ffprobe for finding the length of a file
-# - Standardise certain datatypes. So far:
-#    · "Audios" -> Attachments
-#    · Removed AudioHandler
+# - Memory/Time optimisations; maybe use multiprocessing for some things...
+# - Enforce standards on some data structures, like references to messages
 # - Song announcements in channels
 # - History reading
 #    · On start, check the last n messages
+#    · Make sure not to include messages that have been deleted cause they were played to death
 # - Make errors fail loud enough that we know about it
 # - Track voting
 # - Skipping functions (permissions: who can do this...)
-# - Config files: paramaterise things like
-#    · Whether to use PCM or Opus
-#    · Length and filesize over which attachments are rejected
 # - More types of attachments, like soundcloud links
 # - Write README
 # - Bug found: Attachment URLs are signed wth a token that changes every 24hr. This resets playcounts.
@@ -200,7 +194,7 @@ async def play(domain: int):
                 break
 
             if not await helpers.validCDNURL(track.url):
-                await rollcall(domain, track.channel, track.message)
+                await rollcall((domain, track.channel, track.message))
                 continue
 
             # see if we have the user in memory

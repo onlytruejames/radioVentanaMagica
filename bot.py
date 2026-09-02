@@ -6,7 +6,6 @@ made for The Magic Window
 
 # TODO:
 # - Memory/Time optimisations; maybe use multiprocessing for some things...
-# - Enforce standards on some data structures, like references to messages
 # - Song announcements in channels
 # - History reading
 #    · On start, check the last n messages
@@ -16,9 +15,7 @@ made for The Magic Window
 # - Skipping functions (permissions: who can do this...)
 # - More types of attachments, like soundcloud links
 # - Write README
-# - Bug found: Attachment URLs are signed wth a token that changes every 24hr. This resets playcounts.
 # - Cleanup config file
-
 
 import asyncio, random, discord, traceback
 from time import time
@@ -79,6 +76,9 @@ async def getAudio(domain: int, exclude=None) -> Attachment:
         return None
     channels = {}
     history = domains[domain]["history"]
+
+    # bin format
+    # {channelid: [[attachment1, age1], [attachment2, age2]]}
     bin = {}
     for attachment in results:
         policy = domains[domain]["sources"][attachment.channel]
@@ -123,10 +123,10 @@ async def getAudio(domain: int, exclude=None) -> Attachment:
         policy = domains[domain]["sources"][c]
         if excess := (len(channels[c]) - policy["prefSize"]) > 0:
             # delete oldest tunes
-            bin.sort(key = lambda x: x[1], reversed=True)
-            async for track in bin[:min(len(bin), excess)]:
-                deleted.append(track.uid)
-                await track.delete()
+            bin[c].sort(key = lambda x: x[1], reverse=True)
+            for track in bin[c][:min(len(bin), excess)]:
+                deleted.append(track[0].uid)
+                await track[0].delete()
         channels[c] = [track[1:] for track in channels[c] if not track[0] in deleted]
 
     # select least played tracks from each channel

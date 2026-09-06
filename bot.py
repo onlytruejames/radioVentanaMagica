@@ -169,7 +169,7 @@ async def play(domain: int):
 
     # lazy lock on this domain
     if domains[domain]["playing"] or not await hasAudience(channelID):
-        pass
+        return
     domains[domain]["playing"] = True
 
     # BEGIN BORING CONFIG

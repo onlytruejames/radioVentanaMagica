@@ -16,9 +16,11 @@ made for The Magic Window
 # - More types of attachments, like soundcloud links
 # - Write README
 # - Cleanup config file
+# - Sanitise database inputs or Little Bobby Tables' Mum will ferociously attack me in the night
 
 import asyncio, random, discord, traceback
 from time import time
+from aiosqlite import IntegrityError
 
 from components.attachment import Attachment
 from components import database
@@ -43,7 +45,7 @@ async def getMessages() -> list[discord.Message]:
     """
     Retrieve all messages stored in the database. Delete any that no longer exist.
     """
-    messages = await database.transaction(f"SELECT domain, channel, message FROM messages;")
+    messages = (await database.transactions(f"SELECT domain, channel, message FROM messages;"))[0]
     messageObjs = []
     for m in messages:
         ref = MessageReference(m["domain"], m["channel"], m["message"])
@@ -52,16 +54,20 @@ async def getMessages() -> list[discord.Message]:
             messageObjs.append(msg)
     return messageObjs
 
-async def addMessage(message: discord.Message) -> None:
+async def addMessage(message: discord.Message) -> bool:
     """
     message: The message we want to store
     
-    Add message to database
+    Try to add message to database, returning true if added and false if it already exists there.
     """
     id = getMessageHash(message)
-    await database.transaction(f"INSERT INTO messages VALUES ({message.guild.id}, {message.channel.id}, {message.id}, {id}, {message.created_at.timestamp()}, {message.author.id});")
+    try:
+        await database.transactions(f"INSERT INTO messages VALUES ({message.guild.id}, {message.channel.id}, {message.id}, {id}, {message.created_at.timestamp()}, {message.author.id});")
+        return True
+    except IntegrityError:
+        return False
 
-async def getAudio(domain: int, exclude=None) -> Attachment:
+async def getAudio(domain: int, exclude: int=None) -> Attachment:
     """
     domain: int - ID of domain we're talking about
 
@@ -74,12 +80,12 @@ async def getAudio(domain: int, exclude=None) -> Attachment:
     results: list[Attachment] = await Attachment.getAttachmentsWhere(f"domain = {domain}")
     if len(results) == 0:
         return None
-    channels = {}
+    channels: dict[int, list[Attachment, int]] = {}
     history = domains[domain]["history"]
 
     # bin format
     # {channelid: [[attachment1, age1], [attachment2, age2]]}
-    bin = {}
+    bin: dict[int, list[list[Attachment, int]]] = {}
     for attachment in results:
         policy = domains[domain]["sources"][attachment.channel]
         penaltySum = 0
@@ -112,22 +118,24 @@ async def getAudio(domain: int, exclude=None) -> Attachment:
             bin[attachment.channel].append([attachment, age])
 
         # add to playlist
-        channels[attachment.channel].append([attachment.uid, attachment, penaltySum])
+        channels[attachment.channel].append([attachment, penaltySum])
 
-    # attachment format: [uid, attachment, penalty]
+    # attachment format: [attachment, penalty]
     # channels is a list of these
 
     # delete what you can
+    deleted: list[Attachment] = []
     for c in channels:
-        deleted = []
+        cBin = bin[c] # bin for this channel
         policy = domains[domain]["sources"][c]
-        if excess := (len(channels[c]) - policy["prefSize"]) > 0:
+        if (excess := (len(channels[c]) - policy["prefSize"])) > 0:
+            await logging.log(f"Deleting {excess} attachments...")
             # delete oldest tunes
-            bin[c].sort(key = lambda x: x[1], reverse=True)
-            for track in bin[c][:min(len(bin), excess)]:
-                deleted.append(track[0].uid)
-                await track[0].delete()
-        channels[c] = [track[1:] for track in channels[c] if not track[0] in deleted]
+            cBin.sort(key = lambda x: x[1], reverse=True)
+            for i in range(excess):
+                deleted.append(cBin.pop(0)[0])
+        channels[c] = [track for track in channels[c] if not track in deleted]
+    await Attachment.bulkDelete(deleted)
 
     # select least played tracks from each channel
     for c in channels:
@@ -256,9 +264,12 @@ async def on_ready():
     await logging.log(f'Auditing messages in the database...')
     messages = await getMessages()
     for m in messages:
+        # This bit takes a long time because you're doing at least one api call for every message.
         await rollcall(m)
     for guild in config.client.guilds:
         if guild.id in domains:
+            await logging.log(f"Deleting old attachments from {guild.name}")
+            await getAudio(guild.id)
             await logging.log(f"{guild.name} connected and registered")
             if await hasAudience(domains[guild.id]["broadcast"]["channel"]):
                 asyncio.run_coroutine_threadsafe(play(guild.id), asyncio.get_event_loop())
@@ -270,6 +281,8 @@ async def rollcall(message: discord.Message | MessageReference) -> None:
     message: discord.Message object MessageReference object
 
     Compare all known attachments on a message with its actual attachments, and update the database to reflect reality
+
+    Adds message to database if it isn't recorded
 
     Deletes message from database if it does not exist
     """
@@ -291,23 +304,28 @@ async def rollcall(message: discord.Message | MessageReference) -> None:
         return
 
     # Find the attachments the database thinks the message has
-    prevattachments = await Attachment.getAttachmentsWhere(f"messageID = {ref.hash}")
-
-    added = []
-    for current in attachments:
-        found = False
-        for prev in prevattachments:
-            # check if we know about this attachment, updating the attachment hash if needed
-            if prev == current:
-                # database knows about this attachment
-                if prev.url != current.url:
-                    # update to new url
-                    await database.transaction(f"UPDATE attachments SET url='{current.url}' WHERE url='{prev.url}';")
-                prevattachments.remove(prev)
-                found = True
-                break
-        if not found:
-            added.append(current)
+    prevattachments: list[Attachment] = await Attachment.getAttachmentsWhere(f"messageID = {ref.hash}")
+    if len(prevattachments) == 0:
+        await addMessage(message)
+        added: list[Attachment] = attachments
+    else:
+        added: list[Attachment] = []
+        updates = []
+        for current in attachments:
+            found = False
+            for prev in prevattachments:
+                # check if we know about this attachment, updating the attachment hash if needed
+                if prev == current:
+                    # database knows about this attachment
+                    if prev.url != current.url:
+                        # update to new url
+                        updates.append(f"UPDATE attachments SET url='{current.url}' WHERE url='{prev.url}';")
+                    prevattachments.remove(prev)
+                    found = True
+                    break
+            if not found:
+                added.append(current)
+        await database.transactions(updates)
 
     # All attachments left in prevattachment have been deleted
     for current in added:
@@ -315,23 +333,19 @@ async def rollcall(message: discord.Message | MessageReference) -> None:
     for d in prevattachments:
         await d.delete()
 
+    domain = message.guild.id
+    if not domains[domain]["playing"]:
+        await play(domain)
+
 @config.client.event
 async def on_message(message):
     if not (domain := message.guild.id) in domains:
         return
     if not message.channel.id in domains[domain]["sources"]:
         return
-    # get all audios associated with the message
-    attachment = await Attachment.getAttachments(message)
-    if attachment == []:
-        return # none - do nothing
-    else:
-        # add all audios
-        await addMessage(message)
-        for a in attachment:
-            await a.addAttachment()
-    if not domains[domain]["playing"]:
-        await play(domain)
+    # pass over to rollcall if it has attachments
+    if not len(message.attachments) == 0:
+        await rollcall(message)
 
 @config.client.event
 async def on_message_edit(before, after):

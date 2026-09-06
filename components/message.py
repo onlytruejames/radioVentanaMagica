@@ -47,7 +47,7 @@ class MessageReference:
         """
         Delete this message and all its attachment from the database
         """
-        await database.transaction(f"DELETE FROM messages WHERE messageID={self.hash}; DELETE FROM attachments WHERE messageID={self.hash};")
+        await database.transactions([f"DELETE FROM messages WHERE messageID={self.hash};", f"DELETE FROM attachments WHERE messageID={self.hash};"])
 
 def getMessageHash(message: discord.Message | MessageReference) -> int:
     """

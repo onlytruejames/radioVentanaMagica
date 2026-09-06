@@ -5,7 +5,7 @@ Module for code related to the Attachment model
 from typing import Union
 import discord, json, traceback
 from components import config, logging, database
-from components.message import getMessageHash
+from components.message import getMessageHash, MessageReference
 from ffmpeg.asyncio import FFmpeg
 import aiohttp
 
@@ -25,6 +25,7 @@ class Attachment:
             dob: int,
             channel: int,
             message: int,
+            domain: int,
             playcount: int | None = None
         ):
         # composite key: REQUIRED
@@ -38,7 +39,10 @@ class Attachment:
         self.author = author
         self.dob = dob
         self.channel = channel
-        self.message = message
+        self.message = message,
+        self.domain = domain
+
+        self.messageRef = MessageReference(domain, channel, message)
 
         # only database
         self.playcount = playcount
@@ -58,7 +62,8 @@ class Attachment:
                 message.author,
                 message.created_at.timestamp(),
                 message.channel.id,
-                message.id
+                message.id,
+                message.guild.id
             )
         return False
 
@@ -87,12 +92,12 @@ class Attachment:
         playcount
         """
         if len(condition) == 0:
-            results = await database.transaction("SELECT * FROM attachments JOIN messages ON attachments.messageID = messages.messageID;")
+            results = (await database.transactions("SELECT * FROM attachments JOIN messages ON attachments.messageID = messages.messageID;"))[0]
         else:
             if ";" in condition:
                 raise SyntaxError("Semicolons not allowed in conditions")
             condition = condition.replace("messageID", "attachments.messageID")
-            results = await database.transaction(f"SELECT * FROM attachments JOIN messages ON attachments.messageID = messages.messageID WHERE {condition};")
+            results = (await database.transactions(f"SELECT * FROM attachments JOIN messages ON attachments.messageID = messages.messageID WHERE {condition};"))[0]
 
         return [Attachment(
             result["messageID"],
@@ -103,18 +108,29 @@ class Attachment:
             result["dob"],
             result["channel"],
             result["message"],
+            result["domain"],
             result["playcount"]
         ) for result in results]
 
     async def delete(self) -> None:
-        await database.transaction(f"DELETE FROM attachments WHERE messageID={self.messageID} and url='{self.url}';")
+        """
+        Delete this attachment from the database.
+
+        If you are bulk deleting attachments it is preferred to use attachment.bulkDelete(attachments)
+        """
+        await database.transactions(self.getDeleteStatement())
+        if len((await self.getAttachmentsWhere(f"messageID = {self.messageID}"))[0]) == 0:
+            await self.messageRef.deleteMessage()
         del self
+
+    def getDeleteStatement(self) -> str:
+        return f"DELETE FROM attachments WHERE messageID={self.messageID} and url='{self.url}';"
 
     async def addAttachment(self) -> None:
         """
         Add this attachment to the database
         """
-        await database.transaction(f"INSERT INTO attachments VALUES ({self.messageID}, 0, '{self.url}', {self.length}, '{self.name}');")
+        await database.transactions(f"INSERT INTO attachments VALUES ({self.messageID}, 0, '{self.url}', {self.length}, '{self.name}');")
 
     async def increment(self) -> None:
         """
@@ -123,7 +139,7 @@ class Attachment:
         await self.refreshPlaycount()
         pc = self.playcount + 1
         self.playcount = pc
-        await database.transaction(f"UPDATE attachments SET playcount={pc} WHERE messageID='{self.messageID}' and url='{self.url}';")
+        await database.transactions(f"UPDATE attachments SET playcount={pc} WHERE messageID='{self.messageID}' and url='{self.url}';")
 
     async def validateAttachment(message: discord.Message, attachment: discord.Attachment) -> float | int | bool:
         """
@@ -162,7 +178,7 @@ class Attachment:
         """
         if self.playcount:
             return self.playcount
-        pc = await database.transaction(f"SELECT playcount FROM attachments WHERE messageID={self.messageID} and url='{self.url}';")
+        pc = (await database.transactions(f"SELECT playcount FROM attachments WHERE messageID={self.messageID} and url='{self.url}';"))[0]
         try:
             return pc[0]["playcount"]
         except:
@@ -190,3 +206,27 @@ class Attachment:
         async with aiohttp.ClientSession() as session:
             async with session.head(self.url) as got:
                 return got.status == 200
+
+    async def bulkDelete(attachments: list['Attachment']) -> None:
+        """
+        attachments: list of attachments to delete
+
+        Alternate/more efficient way than Attachment.delete of deleting multiple attachments
+        
+        Deletes all messages with no attachments in the database, else they're just scanned again with a playcount of 0
+        """
+        await database.transactions([a.getDeleteStatement() for a in attachments])
+        messageRefs: set[MessageReference] = set()
+        for a in attachments:
+            messageRefs.add(a.messageRef)
+        messageRefs: list[MessageReference] = list(messageRefs)
+        statements = []
+        for m in messageRefs:
+            statements.append(f"SELECT * FROM attachments JOIN messages ON attachments.messageID = messages.messageID WHERE attachments.messageID={m.hash};")
+        results = (await database.transactions(statements))
+
+        deleteStatements = []
+        for i, result in enumerate(results):
+            if len(result) == 0:
+                deleteStatements.append(f"DELETE FROM messages WHERE messageID={messageRefs[i].hash};")
+        await database.transactions(deleteStatements)

@@ -104,8 +104,9 @@ class Attachment:
         
         playcount
         """
-        # no changes made, no commits needed
+        owner = False
         if not conn:
+            owner = True
             conn = await database.connection()
         
         if len(condition) == 0:
@@ -115,6 +116,9 @@ class Attachment:
                 raise SyntaxError("Semicolons not allowed in conditions")
             condition = condition.replace("messageID", "attachments.messageID")
             results = await database.execute(f"SELECT * FROM attachments JOIN messages ON attachments.messageID = messages.messageID WHERE {condition};", conn)
+
+        if owner:
+            await database.finish(conn)
 
         return [Attachment(
             result["messageID"],

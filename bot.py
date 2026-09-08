@@ -305,7 +305,6 @@ async def on_ready():
                 asyncio.run_coroutine_threadsafe(play(guild.id), asyncio.get_event_loop())
         else:
             await logging.log(f"{guild.name} is not registered")
-    await database.finish(conn)
 
 async def rollcall(message: discord.Message | MessageReference, conn: Connection = None) -> None:
     """

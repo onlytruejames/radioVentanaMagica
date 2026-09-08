@@ -60,7 +60,7 @@ class MessageReference:
             conn = await database.connection()
         await database.executeMultiple([f"DELETE FROM messages WHERE messageID={self.hash};", f"DELETE FROM attachments WHERE messageID={self.hash};"], conn)
         if owner:
-            await database.finish()
+            await database.finish(conn)
         else:
             await conn.commit()
 

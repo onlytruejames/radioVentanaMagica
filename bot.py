@@ -402,7 +402,7 @@ async def on_message_delete(message: discord.Message):
         return
     if not message.channel.id in domains[domain]["sources"]:
         return
-    msg = MessageReference.fromDiscordMessage(message)
+    msg: MessageReference = MessageReference.fromDiscordMessage(message)
     await msg.deleteMessage()
 
 @config.client.event

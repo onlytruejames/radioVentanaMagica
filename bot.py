@@ -336,7 +336,7 @@ async def rollcall(message: discord.Message | MessageReference, conn: Connection
     # Find the attachments the database thinks the message has
     prevattachments: list[Attachment] = await Attachment.getAttachmentsWhere(f"messageID = {ref.hash}", conn)
     if len(prevattachments) == 0:
-        await addMessage(message)
+        await addMessage(message, conn)
         added: list[Attachment] = attachments
     else:
         added: list[Attachment] = []

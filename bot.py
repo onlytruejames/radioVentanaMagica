@@ -56,8 +56,8 @@ async def getMessages(conn: Connection = None) -> list[discord.Message]:
         # Deleting is handled by toDiscordMessage
         if msg := await ref.toDiscordMessage(conn):
             messageObjs.append(msg)
-        if owner:
-            await database.finish(conn)
+    if owner:
+        await database.finish(conn)
     return messageObjs
 
 async def addMessage(message: discord.Message, conn: Connection = None) -> bool:
@@ -77,9 +77,11 @@ async def addMessage(message: discord.Message, conn: Connection = None) -> bool:
             await database.finish(conn)
         return True
     except IntegrityError:
+        if owner:
+            await database.finish(conn)
         return False
 
-async def getAudio(domain: int, exclude: int=None) -> Attachment:
+async def getAudio(domain: int, conn: Connection = None, exclude: int=None) -> Attachment:
     """
     domain: int - ID of domain we're talking about
 
@@ -89,7 +91,11 @@ async def getAudio(domain: int, exclude: int=None) -> Attachment:
     
     Returns an attachment
     """
-    results: list[Attachment] = await Attachment.getAttachmentsWhere(f"domain = {domain}")
+    owner = False
+    if not conn:
+        owner = True
+        conn = await database.connection()
+    results: list[Attachment] = await Attachment.getAttachmentsWhere(f"domain = {domain}", conn)
     if len(results) == 0:
         return None
     channels: dict[int, list[Attachment, int]] = {}
@@ -144,13 +150,14 @@ async def getAudio(domain: int, exclude: int=None) -> Attachment:
             await logging.log(f"Deleting {excess} attachments...")
             # delete oldest tunes
             cBin.sort(key = lambda x: x[1], reverse=True)
-            conn = await database.connection()
             for i in range(excess):
                 moribund = cBin.pop(0)[0]
                 await moribund.delete(conn)
                 deleted.append(moribund)
-            await database.finish(conn)
         channels[c] = [track for track in channels[c] if not track in deleted]
+
+    if owner:
+        await database.finish(conn)
 
     # select least played tracks from each channel
     for c in channels:
@@ -287,6 +294,8 @@ async def on_ready():
     for m in messages:
         # This bit takes a long time because you're doing at least one api call for every message.
         await rollcall(m, conn)
+    await database.finish(conn)
+
     for guild in config.client.guilds:
         if guild.id in domains:
             await logging.log(f"Deleting old attachments from {guild.name}")

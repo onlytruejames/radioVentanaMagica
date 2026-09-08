@@ -168,15 +168,15 @@ class Attachment:
         """
         Increment the playcount of this attachment
         """
-        commit = False
+        owner = False
         if not conn:
-            commit = True
+            owner = True
             conn = await database.connection()
         await self.refreshPlaycount(conn)
         pc = self.playcount + 1
         self.playcount = pc
         await database.execute(f"UPDATE attachments SET playcount={pc} WHERE messageID='{self.messageID}' and url='{self.url}';", conn)
-        if commit:
+        if owner:
             await conn.commit()
 
     async def validateAttachment(message: discord.Message, attachment: discord.Attachment) -> float | int | bool:
@@ -214,13 +214,14 @@ class Attachment:
         """
         Ensure the playcount in this object is up to date, and return the playcount
         """
-        # does not make changes so does not need commiting
+        owner = False
         if not conn:
+            owner = True
             conn = await database.connection()
-        if self.playcount:
-            return self.playcount
         try:
             self.playcount = (await database.execute(f"SELECT playcount FROM attachments WHERE messageID={self.messageID} and url='{self.url}';", conn))[0]["playcount"]
+            if owner:
+                database.finish(conn)
             return self.playcount
         except:
             raise ValueError("This attachment does not exist")

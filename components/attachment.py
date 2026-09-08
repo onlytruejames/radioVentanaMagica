@@ -144,7 +144,7 @@ class Attachment:
             conn = await database.connection()
         await database.execute(f"DELETE FROM attachments WHERE messageID={self.messageID} and url='{self.url}';", conn)
         await conn.commit()
-        if len(await self.getAttachmentsWhere(f"messageID = {self.messageID}", conn=conn)) == 0:
+        if len(await self.getAttachmentsWhere(f"messageID = {self.messageID}", conn)) == 0:
             await self.messageRef.deleteMessage(conn)
         if owner:
             await conn.commit()

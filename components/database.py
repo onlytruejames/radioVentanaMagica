@@ -1,29 +1,68 @@
 """
 Holder for database functions
+
+ON CONNECTIONS:
+
+Connections are established when required but the responsibility of closing the connection lies with the function that created it
 """
 
 import aiosqlite
 
-async def transactions(statements: str | list[str]) -> list[list[aiosqlite.Row]]:
+async def execute(statement: str, conn: aiosqlite.Connection = None) -> list[aiosqlite.Row]:
     """
-    statements: str for single statement, list[str] for multiple
+    statement: A single sqlite statement
 
-    Returns a list of Rows for each statement provided
+    conn: An open connection to the database (optional)
 
-    Execute lines of sql, commit, tidy up, and return everything returned by the statements
-
-    Try to bundle as many statements as possible into this parameter for efficiency
-    
-    For example if you're calling this function in a loop, wait until the loop has terminated to execute all your statements
+    Execute the single statement and return all results. Tidy up if connection not provided
     """
-    if type(statements) == str:
-        statements = [statements]
-    async with aiosqlite.connect("audio.db") as db:
-        db.row_factory = aiosqlite.Row
-        results: list[aiosqlite.Row] = []
-        for s in statements:
-            if len(s) != 0:
-                cur = await db.execute(s)
-                results.append(await cur.fetchall())
-        await db.commit()
+    owner = False
+    if not conn:
+        conn = await connection()
+        owner = True
+    cur = await conn.execute(statement)
+    results = await cur.fetchall()
+    if owner:
+        await finish(conn)
     return results
+
+async def executeMultiple(statements: list[str], conn: aiosqlite.Connection = None) -> list[list[aiosqlite.Row]]:
+    """
+    statement: A single sqlite statement
+
+    conn: An open connection to the database (optional)
+
+    database.execute() for multiple statements
+    
+    Execute the single statement and return all results. Tidy up if connection not provided
+    """
+    owner = False
+    if not conn:
+        conn = await connection()
+        owner = True
+    results = []
+    for s in statements:
+        cur = await conn.execute(s)
+        results.append(await cur.fetchall())
+    if owner:
+        await finish(conn)
+    return results
+
+async def connection() -> aiosqlite.Connection:
+    """
+    Sets up a database connection for you
+    
+    It is now your responsibility to commit and close it before the function ends
+    """
+    db = await aiosqlite.connect("audio.db")
+    db.row_factory = aiosqlite.Row
+    return db
+
+async def finish(conn: aiosqlite.Connection) -> None:
+    """
+    conn: Connection to the database
+
+    Remember to call this before the end of any function owning a connection
+    """
+    await conn.commit()
+    await conn.close()

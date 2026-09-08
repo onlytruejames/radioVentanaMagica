@@ -20,7 +20,7 @@ made for The Magic Window
 
 import asyncio, random, discord, traceback
 from time import time
-from aiosqlite import IntegrityError
+from aiosqlite import IntegrityError, Connection
 
 from components.attachment import Attachment
 from components import database
@@ -41,28 +41,40 @@ match config.config["broadcastEncoding"]:
 
 domains = config.domains
 
-async def getMessages() -> list[discord.Message]:
+async def getMessages(conn: Connection = None) -> list[discord.Message]:
     """
     Retrieve all messages stored in the database. Delete any that no longer exist.
     """
-    messages = (await database.transactions(f"SELECT domain, channel, message FROM messages;"))[0]
+    owner = False
+    if not conn:
+        conn = await database.connection()
+        owner = True
+    messages = await database.execute(f"SELECT domain, channel, message FROM messages;", conn)
     messageObjs = []
     for m in messages:
         ref = MessageReference(m["domain"], m["channel"], m["message"])
         # Deleting is handled by toDiscordMessage
-        if msg := await ref.toDiscordMessage():
+        if msg := await ref.toDiscordMessage(conn):
             messageObjs.append(msg)
+        if owner:
+            await database.finish(conn)
     return messageObjs
 
-async def addMessage(message: discord.Message) -> bool:
+async def addMessage(message: discord.Message, conn: Connection = None) -> bool:
     """
     message: The message we want to store
     
     Try to add message to database, returning true if added and false if it already exists there.
     """
+    owner = False
+    if not conn:
+        owner = True
+        conn = await database.connection()
     id = getMessageHash(message)
     try:
-        await database.transactions(f"INSERT INTO messages VALUES ({message.guild.id}, {message.channel.id}, {message.id}, {id}, {message.created_at.timestamp()}, {message.author.id});")
+        await database.execute(f"INSERT INTO messages VALUES ({message.guild.id}, {message.channel.id}, {message.id}, {id}, {message.created_at.timestamp()}, {message.author.id});", conn)
+        if owner:
+            await database.finish(conn)
         return True
     except IntegrityError:
         return False
@@ -132,10 +144,13 @@ async def getAudio(domain: int, exclude: int=None) -> Attachment:
             await logging.log(f"Deleting {excess} attachments...")
             # delete oldest tunes
             cBin.sort(key = lambda x: x[1], reverse=True)
+            conn = await database.connection()
             for i in range(excess):
-                deleted.append(cBin.pop(0)[0])
+                moribund = cBin.pop(0)[0]
+                await moribund.delete(conn)
+                deleted.append(moribund)
+            await database.finish(conn)
         channels[c] = [track for track in channels[c] if not track in deleted]
-    await Attachment.bulkDelete(deleted)
 
     # select least played tracks from each channel
     for c in channels:
@@ -190,7 +205,7 @@ async def play(domain: int):
     voice_client = await channel.connect()
     # END BORING CONFIG
 
-    await logging.log(f"We are connected on {domain}")
+    await logging.log(f"We are connected in {guild.name}: {channel.name}")
 
     while await hasAudience(channelID):
         try:
@@ -200,7 +215,7 @@ async def play(domain: int):
                 await logging.log(f"No tracks in database in guild {config.config['name']}")
                 break
 
-            ref = MessageReference(domain, track.channel, track.message)
+            ref = track.messageRef
             if not await track.validCDNURL():
                 await rollcall(ref)
                 continue
@@ -232,6 +247,8 @@ async def play(domain: int):
             if not await hasAudience(channelID):
                 break
             nextEvent = asyncio.Event()
+            if voice_client.is_playing():
+                return
             try:
                 voice_client.play(source, after = lambda x: nextEvent.set())
                 await track.increment()
@@ -260,12 +277,16 @@ async def play(domain: int):
 
 @config.client.event
 async def on_ready():
+    # This may be called *multiple times*
+    # https://discordpy.readthedocs.io/en/stable/api.html#discord.on_ready
     await logging.log(f'RVM has logged in as {config.client.user}')
     await logging.log(f'Auditing messages in the database...')
-    messages = await getMessages()
+
+    conn = await database.connection()
+    messages = await getMessages(conn)
     for m in messages:
         # This bit takes a long time because you're doing at least one api call for every message.
-        await rollcall(m)
+        await rollcall(m, conn)
     for guild in config.client.guilds:
         if guild.id in domains:
             await logging.log(f"Deleting old attachments from {guild.name}")
@@ -275,8 +296,9 @@ async def on_ready():
                 asyncio.run_coroutine_threadsafe(play(guild.id), asyncio.get_event_loop())
         else:
             await logging.log(f"{guild.name} is not registered")
+    await database.finish(conn)
 
-async def rollcall(message: discord.Message | MessageReference) -> None:
+async def rollcall(message: discord.Message | MessageReference, conn: Connection = None) -> None:
     """
     message: discord.Message object MessageReference object
 
@@ -286,12 +308,18 @@ async def rollcall(message: discord.Message | MessageReference) -> None:
 
     Deletes message from database if it does not exist
     """
+    owner = False
+    if not conn:
+        owner = True
+        conn = await database.connection()
 
     # Ensure we have both a message and a reference to it
     if type(message) == MessageReference:
         ref = message
-        message = await ref.toDiscordMessage()
+        message = await ref.toDiscordMessage(conn)
         if not message:
+            if owner:
+                await database.finish(conn)
             return
     else:
         ref = MessageReference.fromDiscordMessage(message)
@@ -300,17 +328,18 @@ async def rollcall(message: discord.Message | MessageReference) -> None:
     attachments = await Attachment.getAttachments(message)
     if attachments == []:
         # delete message AND its attachments
-        await ref.deleteMessage()
+        await ref.deleteMessage(conn)
+        if owner:
+            await database.finish(conn)
         return
 
     # Find the attachments the database thinks the message has
-    prevattachments: list[Attachment] = await Attachment.getAttachmentsWhere(f"messageID = {ref.hash}")
+    prevattachments: list[Attachment] = await Attachment.getAttachmentsWhere(f"messageID = {ref.hash}", conn)
     if len(prevattachments) == 0:
         await addMessage(message)
         added: list[Attachment] = attachments
     else:
         added: list[Attachment] = []
-        updates = []
         for current in attachments:
             found = False
             for prev in prevattachments:
@@ -319,26 +348,28 @@ async def rollcall(message: discord.Message | MessageReference) -> None:
                     # database knows about this attachment
                     if prev.url != current.url:
                         # update to new url
-                        updates.append(f"UPDATE attachments SET url='{current.url}' WHERE url='{prev.url}';")
+                        await database.execute(f"UPDATE attachments SET url='{current.url}' WHERE url='{prev.url}';", conn)
                     prevattachments.remove(prev)
                     found = True
                     break
             if not found:
                 added.append(current)
-        await database.transactions(updates)
 
     # All attachments left in prevattachment have been deleted
     for current in added:
-        await current.addAttachment()
+        await current.addAttachment(conn)
     for d in prevattachments:
-        await d.delete()
+        await d.delete(conn)
+
+    if owner:
+        await database.finish(conn)
 
     domain = message.guild.id
     if not domains[domain]["playing"]:
         await play(domain)
 
 @config.client.event
-async def on_message(message):
+async def on_message(message: discord.Message):
     if not (domain := message.guild.id) in domains:
         return
     if not message.channel.id in domains[domain]["sources"]:
@@ -348,7 +379,7 @@ async def on_message(message):
         await rollcall(message)
 
 @config.client.event
-async def on_message_edit(before, after):
+async def on_message_edit(before: discord.Message, after: discord.Message):
     if not (domain := after.guild.id) in domains:
         return
     if not after.channel.id in domains[domain]["sources"]:
@@ -358,7 +389,7 @@ async def on_message_edit(before, after):
     await rollcall(after)
 
 @config.client.event
-async def on_message_delete(message):
+async def on_message_delete(message: discord.Message):
     if not (domain := message.guild.id) in domains:
         return
     if not message.channel.id in domains[domain]["sources"]:
@@ -367,7 +398,7 @@ async def on_message_delete(message):
     await msg.deleteMessage()
 
 @config.client.event
-async def on_voice_state_update(member, before, after):
+async def on_voice_state_update(member: discord.User, before: discord.VoiceState, after: discord.VoiceState):
     channel = after.channel
     if member.id == config.client.user.id or not channel:
         return

@@ -8,6 +8,7 @@ from components import config, logging, database
 from components.message import getMessageHash, MessageReference
 from ffmpeg.asyncio import FFmpeg
 import aiohttp
+from aiosqlite import Connection
 
 class Attachment:
     """
@@ -19,10 +20,10 @@ class Attachment:
             self,
             messageID: int,
             url: str,
-            length: int,
+            length: int | float,
             name: str,
             author: int,
-            dob: int,
+            dob: int | float,
             channel: int,
             message: int,
             domain: int,
@@ -30,22 +31,32 @@ class Attachment:
         ):
         # composite key: REQUIRED
         self.messageID = messageID
+        assert type(messageID) == int
         self.url = url
+        assert type(url) == str
         self.uid = hash((messageID, url.split("?")[0]))
 
         # present when created from attachment or database: we will know these
         self.length = length
+        assert type(length) in [int, float]
         self.name = name
+        assert type(name) == str
         self.author = author
+        assert type(author) == int
         self.dob = dob
+        assert type(dob) in [int, float]
         self.channel = channel
-        self.message = message,
+        assert type(channel) == int
+        self.message = message
+        assert type(message) == int
         self.domain = domain
+        assert type(domain) == int
 
         self.messageRef = MessageReference(domain, channel, message)
 
         # only database
         self.playcount = playcount
+        assert type(playcount) in [int, type(None)]
 
     async def fromAttachment(message: discord.Message, attachment: discord.Attachment) -> Union[bool, 'Attachment']:
         """
@@ -59,7 +70,7 @@ class Attachment:
                 attachment.url,
                 length,
                 attachment.filename,
-                message.author,
+                message.author.id,
                 message.created_at.timestamp(),
                 message.channel.id,
                 message.id,
@@ -67,9 +78,11 @@ class Attachment:
             )
         return False
 
-    async def getAttachmentsWhere(condition: str = "") -> list['Attachment']:
+    async def getAttachmentsWhere(condition: str = "", conn: Connection = None) -> list['Attachment']:
         """
         condition (optional): a SQL condition
+
+        conn (optional): an aiosqlite connection
 
         Select all attachments meeting a SQL condition, return as Attachment objects. Variables are:
         
@@ -91,13 +104,17 @@ class Attachment:
         
         playcount
         """
+        # no changes made, no commits needed
+        if not conn:
+            conn = await database.connection()
+        
         if len(condition) == 0:
-            results = (await database.transactions("SELECT * FROM attachments JOIN messages ON attachments.messageID = messages.messageID;"))[0]
+            results = await database.execute("SELECT * FROM attachments JOIN messages ON attachments.messageID = messages.messageID;", conn)
         else:
             if ";" in condition:
                 raise SyntaxError("Semicolons not allowed in conditions")
             condition = condition.replace("messageID", "attachments.messageID")
-            results = (await database.transactions(f"SELECT * FROM attachments JOIN messages ON attachments.messageID = messages.messageID WHERE {condition};"))[0]
+            results = await database.execute(f"SELECT * FROM attachments JOIN messages ON attachments.messageID = messages.messageID WHERE {condition};", conn)
 
         return [Attachment(
             result["messageID"],
@@ -112,34 +129,51 @@ class Attachment:
             result["playcount"]
         ) for result in results]
 
-    async def delete(self) -> None:
+    async def delete(self, conn: Connection = None) -> None:
         """
+        conn: aiosqlite.Connection to the database (optional)
         Delete this attachment from the database.
-
-        If you are bulk deleting attachments it is preferred to use attachment.bulkDelete(attachments)
         """
-        await database.transactions(self.getDeleteStatement())
-        if len((await self.getAttachmentsWhere(f"messageID = {self.messageID}"))[0]) == 0:
-            await self.messageRef.deleteMessage()
+        owner = False
+        if not conn:
+            owner = True
+            conn = await database.connection()
+        await database.execute(f"DELETE FROM attachments WHERE messageID={self.messageID} and url='{self.url}';", conn)
+        await conn.commit()
+        if len(await self.getAttachmentsWhere(f"messageID = {self.messageID}", conn=conn)) == 0:
+            await self.messageRef.deleteMessage(conn)
+        if owner:
+            await conn.commit()
         del self
 
-    def getDeleteStatement(self) -> str:
-        return f"DELETE FROM attachments WHERE messageID={self.messageID} and url='{self.url}';"
-
-    async def addAttachment(self) -> None:
+    async def addAttachment(self, conn: Connection = None) -> None:
         """
+        conn: aiosqlite.Connection to the database (optional)
+
         Add this attachment to the database
         """
-        await database.transactions(f"INSERT INTO attachments VALUES ({self.messageID}, 0, '{self.url}', {self.length}, '{self.name}');")
+        owner = False
+        if not conn:
+            owner = True
+            conn = await database.connection()
+        await database.execute(f"INSERT INTO attachments VALUES ({self.messageID}, 0, '{self.url}', {self.length}, '{self.name}');", conn)
+        if owner:
+            await conn.commit()
 
-    async def increment(self) -> None:
+    async def increment(self, conn: Connection = None) -> None:
         """
         Increment the playcount of this attachment
         """
-        await self.refreshPlaycount()
+        commit = False
+        if not conn:
+            commit = True
+            conn = await database.connection()
+        await self.refreshPlaycount(conn)
         pc = self.playcount + 1
         self.playcount = pc
-        await database.transactions(f"UPDATE attachments SET playcount={pc} WHERE messageID='{self.messageID}' and url='{self.url}';")
+        await database.execute(f"UPDATE attachments SET playcount={pc} WHERE messageID='{self.messageID}' and url='{self.url}';", conn)
+        if commit:
+            await conn.commit()
 
     async def validateAttachment(message: discord.Message, attachment: discord.Attachment) -> float | int | bool:
         """
@@ -172,15 +206,18 @@ class Attachment:
             await logging.log(traceback.format_exc())
             raise e
 
-    async def refreshPlaycount(self):
+    async def refreshPlaycount(self, conn: Connection = None) -> int:
         """
-        Ensure the playcount is up to date
+        Ensure the playcount in this object is up to date, and return the playcount
         """
+        # does not make changes so does not need commiting
+        if not conn:
+            conn = await database.connection()
         if self.playcount:
             return self.playcount
-        pc = (await database.transactions(f"SELECT playcount FROM attachments WHERE messageID={self.messageID} and url='{self.url}';"))[0]
         try:
-            return pc[0]["playcount"]
+            self.playcount = (await database.execute(f"SELECT playcount FROM attachments WHERE messageID={self.messageID} and url='{self.url}';", conn))[0]["playcount"]
+            return self.playcount
         except:
             raise ValueError("This attachment does not exist")
 
@@ -206,27 +243,3 @@ class Attachment:
         async with aiohttp.ClientSession() as session:
             async with session.head(self.url) as got:
                 return got.status == 200
-
-    async def bulkDelete(attachments: list['Attachment']) -> None:
-        """
-        attachments: list of attachments to delete
-
-        Alternate/more efficient way than Attachment.delete of deleting multiple attachments
-        
-        Deletes all messages with no attachments in the database, else they're just scanned again with a playcount of 0
-        """
-        await database.transactions([a.getDeleteStatement() for a in attachments])
-        messageRefs: set[MessageReference] = set()
-        for a in attachments:
-            messageRefs.add(a.messageRef)
-        messageRefs: list[MessageReference] = list(messageRefs)
-        statements = []
-        for m in messageRefs:
-            statements.append(f"SELECT * FROM attachments JOIN messages ON attachments.messageID = messages.messageID WHERE attachments.messageID={m.hash};")
-        results = (await database.transactions(statements))
-
-        deleteStatements = []
-        for i, result in enumerate(results):
-            if len(result) == 0:
-                deleteStatements.append(f"DELETE FROM messages WHERE messageID={messageRefs[i].hash};")
-        await database.transactions(deleteStatements)
